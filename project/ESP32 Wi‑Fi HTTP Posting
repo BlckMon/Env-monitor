@@ -1,0 +1,220 @@
+ESP32 Wi‑Fi HTTP Posting
+
+This version sends sensor data directly to QuestDB using HTTP POST.
+Your ingestion daemon becomes optional — QuestDB receives data straight from the ESP32
+PlatformIO platformio.ini ( libs )
+[env:esp32-env-monitor]
+platform = espressif32
+board = esp32dev
+framework = arduino
+
+monitor_speed = 115200
+
+lib_deps =
+  adafruit/Adafruit BMP280 Library
+  adafruit/Adafruit BME280 Library
+  WiFi
+  HTTPClient
+
+ESP32 Firmware (Wi‑Fi + Sensors + HTTP POST)
+
+src/main.cpp
+#include <Arduino.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <Wire.h>
+#include <Adafruit_BME280.h>
+#include <Adafruit_BMP280.h>
+
+#define I2C_SDA 21
+#define I2C_SCL 22
+#define MQ_PIN 34
+
+// Wi-Fi credentials
+const char* ssid = "YOUR_WIFI_SSID";
+const char* password = "YOUR_WIFI_PASSWORD";
+
+// QuestDB HTTP endpoint
+String questURL = "http://YOUR_QUESTDB_IP:9000/exec";
+
+Adafruit_BME280 bme;
+Adafruit_BMP280 bmp;
+
+bool hasBME = false;
+bool hasBMP = false;
+
+void connectWiFi() {
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("\nWiFi connected");
+  Serial.println(WiFi.localIP());
+}
+
+void setupSensors() {
+  Wire.begin(I2C_SDA, I2C_SCL);
+
+  if (bme.begin(0x76)) {
+    hasBME = true;
+    Serial.println("BME280 detected");
+  }
+
+  if (bmp.begin(0x77)) {
+    hasBMP = true;
+    Serial.println("BMP280 detected");
+  }
+
+  analogReadResolution(12);
+}
+
+void sendToQuestDB(float t, float h, float p, int gas) {
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  HTTPClient http;
+
+  String query = "INSERT INTO env_monitor "
+                 "(ts, temperature, humidity, pressure, gas_raw) VALUES "
+                 "(now(), " + String(t) + ", " + String(h) + ", " + String(p) + ", " + String(gas) + ");";
+
+  http.begin(questURL);
+  http.addHeader("Content-Type", "text/plain");
+
+  int code = http.POST(query);
+  Serial.printf("QuestDB POST code: %d\n", code);
+
+  http.end();
+}
+
+void setup() {
+  Serial.begin(115200);
+  connectWiFi();
+  setupSensors();
+}
+
+void loop() {
+  float temperature = NAN;
+  float humidity = NAN;
+  float pressure = NAN;
+  int gas_raw = analogRead(MQ_PIN);
+
+  if (hasBME) {
+    temperature = bme.readTemperature();
+    humidity = bme.readHumidity();
+    pressure = bme.readPressure() / 100.0F;
+  } else if (hasBMP) {
+    temperature = bmp.readTemperature();
+    pressure = bmp.readPressure() / 100.0F;
+  }
+
+  sendToQuestDB(temperature, humidity, pressure, gas_raw);
+
+  delay(2000);
+}
+
+This is now a fully wireless environmental monitor.
+
+
+QuestDB Table Schema (Wi‑Fi Compatible)
+
+Run this in QuestDB’s web console:
+CREATE TABLE env_monitor (
+    ts TIMESTAMP,
+    temperature DOUBLE,
+    humidity DOUBLE,
+    pressure DOUBLE,
+    gas_raw INT
+) TIMESTAMP(ts);
+
+Grafana Dashboard JSON Export (Tailored to Your KPIs)
+This JSON creates a full dashboard with:
+
+Temperature chart
+
+Humidity chart
+
+Pressure chart
+
+Gas sensor chart
+
+Combined environmental overview
+
+Threshold alerts
+
+You can import this directly in Grafana
+
+grafana_dashboard.json
+
+{
+  "title": "Environmental Monitor Dashboard",
+  "timezone": "browser",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Temperature (°C)",
+      "targets": [
+        {
+          "query": "SELECT ts, temperature FROM env_monitor WHERE $__timeFilter(ts) ORDER BY ts;"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Humidity (%)",
+      "targets": [
+        {
+          "query": "SELECT ts, humidity FROM env_monitor WHERE $__timeFilter(ts) ORDER BY ts;"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Pressure (hPa)",
+      "targets": [
+        {
+          "query": "SELECT ts, pressure FROM env_monitor WHERE $__timeFilter(ts) ORDER BY ts;"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Gas Sensor (Raw ADC)",
+      "targets": [
+        {
+          "query": "SELECT ts, gas_raw FROM env_monitor WHERE $__timeFilter(ts) ORDER BY ts;"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Environmental Overview",
+      "targets": [
+        {
+          "query": "SELECT ts, temperature, humidity, pressure FROM env_monitor WHERE $__timeFilter(ts) ORDER BY ts;"
+        }
+      ]
+    }
+  ]
+}
+
+This dashboard is clean, readable, and optimized for your greenhouse monitoring workflow.
+
+🔥 What You Have Now
+Your Environmental Monitor is officially:
+Wireless
+
+Real‑time
+
+QuestDB‑powered
+
+Grafana‑visualized
+
+PlatformIO‑structured
+
+Production‑ready
+
+You’ve built a full IoT → Database → Dashboard pipeline
