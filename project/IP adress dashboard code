@@ -1,0 +1,740 @@
+VMware code 
+
+
+#include <WiFi.h>
+#include <WebServer.h>
+#include <Wire.h>
+#include <SPIFFS.h>
+#include <Adafruit_BMP280.h>
+#include <PubSubClient.h>
+#include <ArduinoOTA.h>
+#include <Update.h>
+
+Adafruit_BMP280 bmp;
+
+const int MIC_PIN = 34;
+const int MQ_PIN  = 35;
+
+// ---------------- WIFI ----------------
+const char* ssid     = "home wifi ";   // Your working 2.4 GHz network
+const char* password = "1234567890";     // Your password
+
+// ---------------- MQTT ----------------
+WiFiClient espClient;
+PubSubClient mqtt(espClient);
+const char* mqtt_server = "broker.hivemq.com";
+
+// ---------------- WEB SERVER ----------
+WebServer server(80);
+
+// ---------------- THRESHOLDS ----------
+int noise_thr = 2000;
+int air_thr   = 300;
+
+// ---------------- GLOBAL VALUES -------
+int micRaw = 0;
+int mqRaw  = 0;
+float temp = 0;
+float pressure = 0;
+unsigned long startMillis = 0;
+
+// ======================= CONFIG (SPIFFS) =======================
+
+void loadConfig() {
+  if (!SPIFFS.exists("/config.txt")) {
+    // No config yet, keep defaults
+    return;
+  }
+  File f = SPIFFS.open("/config.txt", FILE_READ);
+  if (!f) {
+    return;
+  }
+  String line = f.readStringUntil('\n');
+  f.close();
+
+  int comma = line.indexOf(',');
+  if (comma > 0) {
+    noise_thr = line.substring(0, comma).toInt();
+    air_thr   = line.substring(comma + 1).toInt();
+  }
+}
+
+void saveConfig() {
+  File f = SPIFFS.open("/config.txt", FILE_WRITE);
+  if (!f) {
+    return;
+  }
+  f.printf("%d,%d\n", noise_thr, air_thr);
+  f.close();
+}
+
+// ======================= LOGGING =======================
+
+void logData() {
+  File f = SPIFFS.open("/log.csv", FILE_APPEND);
+  if (!f) {
+    return;
+  }
+  f.printf("%d,%d,%.2f,%.2f,%lu\n",
+           micRaw, mqRaw, temp, pressure, millis());
+  f.close();
+}
+
+// ======================= MQTT =======================
+
+void sendMQTT() {
+  if (!mqtt.connected()) {
+    mqtt.connect("ESP32_ENV");
+  }
+  String payload = String(micRaw) + "," + String(mqRaw) + "," +
+                   String(temp) + "," + String(pressure);
+  mqtt.publish("shadrack/env", payload.c_str());
+}
+
+// ======================= QUESTDB (ILP) =======================
+
+void sendQuestDB() {
+  if (WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+
+  WiFiClient client;
+  // Your Debian VM IP, ILP port 9009
+  if (!client.connect("10.56.16.135", 9009)) {
+    return;
+  }
+
+  // ILP line: table "env", tag device=esp32, fields
+  String line = "env,device=esp32 ";
+  line += "mic=" + String(micRaw);
+  line += ",mq=" + String(mqRaw);
+  line += ",temp=" + String(temp, 2);
+  line += ",pressure=" + String(pressure, 2);
+  line += "\n";
+
+  client.print(line);
+  client.stop();
+}
+
+// ======================= OFFSETS =======================
+
+int mic_offset = 0;
+int mq_offset  = 0;
+
+// ---------------- SENSOR READ ----------------
+void readSensors() {
+  micRaw = analogRead(MIC_PIN) + mic_offset;
+  mqRaw  = analogRead(MQ_PIN)  + mq_offset;
+
+  temp = bmp.readTemperature();
+  pressure = bmp.readPressure() / 100.0;
+}
+
+// ---------------- JSON API ----------------
+void handleAPI() {
+  String json = "{";
+  json += "\"mic\":" + String(micRaw) + ",";
+  json += "\"mq\":" + String(mqRaw) + ",";
+  json += "\"temp\":" + String(temp) + ",";
+  json += "\"pressure\":" + String(pressure) + ",";
+  json += "\"noise_thr\":" + String(noise_thr) + ",";
+  json += "\"air_thr\":" + String(air_thr) + ",";
+  json += "\"mic_offset\":" + String(mic_offset) + ",";
+  json += "\"mq_offset\":" + String(mq_offset) + ",";
+  json += "\"uptime\":" + String((millis() - startMillis) / 1000);
+  json += "}";
+  server.send(200, "application/json", json);
+}
+
+// ---------------- HISTORICAL LOG VIEWER ----------------
+void handleLogJSON() {
+  if (!SPIFFS.exists("/log.csv")) {
+    server.send(200, "application/json", "[]");
+    return;
+  }
+
+  File f = SPIFFS.open("/log.csv", FILE_READ);
+  if (!f) {
+    server.send(200, "application/json", "[]");
+    return;
+  }
+
+  String json = "[";
+  bool first = true;
+
+  while (f.available()) {
+    String line = f.readStringUntil('\n');
+    if (line.length() < 5) continue;
+
+    int p1 = line.indexOf(',');
+    int p2 = line.indexOf(',', p1 + 1);
+    int p3 = line.indexOf(',', p2 + 1);
+    int p4 = line.indexOf(',', p3 + 1);
+
+    String mic = line.substring(0, p1);
+    String mq  = line.substring(p1 + 1, p2);
+    String t   = line.substring(p2 + 1, p3);
+    String pr  = line.substring(p3 + 1, p4);
+    String ts  = line.substring(p4 + 1);
+
+    if (!first) json += ",";
+    first = false;
+
+    json += "{";
+    json += "\"mic\":" + mic + ",";
+    json += "\"mq\":" + mq + ",";
+    json += "\"temp\":" + t + ",";
+    json += "\"pressure\":" + pr + ",";
+    json += "\"time\":" + ts;
+    json += "}";
+  }
+
+  json += "]";
+  f.close();
+
+  server.send(200, "application/json", json);
+}
+
+// ---------------- CALIBRATION HANDLER ----------------
+void handleCalibration() {
+  if (server.hasArg("mic_offset")) {
+    mic_offset = server.arg("mic_offset").toInt();
+  }
+  if (server.hasArg("mq_offset")) {
+    mq_offset = server.arg("mq_offset").toInt();
+  }
+
+  server.sendHeader("Location", "/");
+  server.send(303);
+}
+
+// ---------------- WIFI MANAGER (OPTION B) ----------------
+// Stored credentials (optional override)
+String wifi_ssid = "";
+String wifi_pass = "";
+
+void loadWiFiConfig() {
+  if (!SPIFFS.exists("/wifi.txt")) return;
+
+  File f = SPIFFS.open("/wifi.txt", FILE_READ);
+  wifi_ssid = f.readStringUntil('\n');
+  wifi_pass = f.readStringUntil('\n');
+  wifi_ssid.trim();
+  wifi_pass.trim();
+  f.close();
+}
+
+void saveWiFiConfig(String s, String p) {
+  File f = SPIFFS.open("/wifi.txt", FILE_WRITE);
+  f.println(s);
+  f.println(p);
+  f.close();
+}
+
+void handleWiFiSave() {
+  if (server.hasArg("ssid") && server.hasArg("pass")) {
+    wifi_ssid = server.arg("ssid");
+    wifi_pass = server.arg("pass");
+    saveWiFiConfig(wifi_ssid, wifi_pass);
+  }
+  server.sendHeader("Location", "/");
+  server.send(303);
+}
+
+// ---------------- OTA UPLOAD BACKEND ----------------
+void handleOTAUpload() {
+  HTTPUpload& upload = server.upload();
+
+  if (upload.status == UPLOAD_FILE_START) {
+    Serial.println("OTA Upload Start");
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+      Update.printError(Serial);
+    }
+  }
+  else if (upload.status == UPLOAD_FILE_WRITE) {
+    if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+      Update.printError(Serial);
+    }
+  }
+  else if (upload.status == UPLOAD_FILE_END) {
+    if (Update.end(true)) {
+      Serial.println("OTA Upload Success");
+    } else {
+      Update.printError(Serial);
+    }
+  }
+}
+
+void handleOTAForm() {
+  String html = "<html><body><h1>OTA Upload</h1>";
+  html += "<form method='POST' action='/ota' enctype='multipart/form-data'>";
+  html += "<input type='file' name='firmware'><br><br>";
+  html += "<input type='submit' value='Upload'>";
+  html += "</form></body></html>";
+  server.send(200, "text/html", html);
+}
+
+// ======================= PAGE HTML =======================
+
+String makePage() {
+  String page = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<style>
+  body {
+    background: #111;
+    color: #eee;
+    font-family: Arial, sans-serif;
+    margin: 0;
+    padding-bottom: 70px;
+  }
+  h1 { text-align: center; margin-top: 20px; }
+
+  .card {
+    background: #222;
+    padding: 15px;
+    margin: 15px;
+    border-radius: 10px;
+  }
+
+  .hidden { display: none; }
+
+  .nav {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 60px;
+    background: #000;
+    display: flex;
+    border-top: 1px solid #333;
+  }
+  .nav button {
+    flex: 1;
+    background: none;
+    border: none;
+    color: #aaa;
+    font-size: 12px;
+  }
+  .nav button.active {
+    color: #4ea3ff;
+  }
+  .nav span {
+    display: block;
+    font-size: 20px;
+  }
+
+  canvas {
+    width: 100%;
+    height: 200px;
+  }
+
+  input[type=text], input[type=number], input[type=password] {
+    width: 90%;
+    padding: 8px;
+    margin: 5px 0;
+    background: #333;
+    color: #eee;
+    border: 1px solid #555;
+    border-radius: 5px;
+  }
+
+  input[type=submit] {
+    padding: 10px 20px;
+    background: #4ea3ff;
+    border: none;
+    color: #000;
+    border-radius: 5px;
+    font-weight: bold;
+  }
+</style>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+
+<body>
+
+<h1>ESP32 Environment Monitor</h1>
+
+<!-- ================= DASHBOARD ================= -->
+<div id="page-dashboard" class="page">
+  <div class="card">
+    <p><b>Mic:</b> <span id="mic">0</span></p>
+    <p><b>MQ135:</b> <span id="mq">0</span></p>
+    <p><b>Temperature:</b> <span id="temp">0</span> °C</p>
+    <p><b>Pressure:</b> <span id="pressure">0</span> hPa</p>
+    <p><b>Noise Threshold:</b> <span id="noise_thr">0</span></p>
+    <p><b>Air Threshold:</b> <span id="air_thr">0</span></p>
+    <p><b>Uptime:</b> <span id="uptime">0</span> s</p>
+  </div>
+
+  <div class="card">
+    <h3>Alerts</h3>
+    <p id="alert-text">No alerts.</p>
+  </div>
+</div>
+
+<!-- ================= CHARTS ================= -->
+<div id="page-charts" class="page hidden">
+  <div class="card"><h3>Noise Level</h3><canvas id="micChart"></canvas></div>
+  <div class="card"><h3>Air Quality</h3><canvas id="mqChart"></canvas></div>
+  <div class="card"><h3>Temperature</h3><canvas id="tempChart"></canvas></div>
+  <div class="card"><h3>Pressure</h3><canvas id="pressureChart"></canvas></div>
+</div>
+
+<!-- ================= SETTINGS ================= -->
+<div id="page-settings" class="page hidden">
+  <div class="card">
+    <h3>Threshold Settings</h3>
+    <form method="POST" action="/settings">
+      <p>Noise Threshold:<br><input type="number" name="noise" id="noise_input"></p>
+      <p>Air Threshold:<br><input type="number" name="air" id="air_input"></p>
+      <p><input type="submit" value="Save"></p>
+    </form>
+  </div>
+</div>
+
+<!-- ================= LOGS ================= -->
+<div id="page-logs" class="page hidden">
+  <div class="card">
+    <h3>Logs</h3>
+    <p><a href="/log">Download CSV log</a></p>
+    <p><button onclick="loadHistory()">Load Historical Charts</button></p>
+    <canvas id="historyChart" class="hidden"></canvas>
+  </div>
+</div>
+
+<!-- ================= SYSTEM ================= -->
+<div id="page-system" class="page hidden">
+  <div class="card">
+    <h3>System Info</h3>
+    <p><b>WiFi:</b> Connected</p>
+    <p><b>MQTT:</b> broker.hivemq.com</p>
+    <p><b>OTA:</b> Enabled</p>
+    <p>Your IP is shown in the browser bar.</p>
+  </div>
+
+  <div class="card">
+    <h3>OTA Firmware Upload</h3>
+    <form method="POST" action="/ota" enctype="multipart/form-data">
+      <input type="file" name="firmware"><br><br>
+      <input type="submit" value="Upload Firmware">
+    </form>
+  </div>
+</div>
+
+<!-- ================= WIFI MANAGER ================= -->
+<div id="page-wifi" class="page hidden">
+  <div class="card">
+    <h3>WiFi Manager</h3>
+    <form method="POST" action="/wifi">
+      <p>SSID:<br><input type="text" name="ssid"></p>
+      <p>Password:<br><input type="password" name="pass"></p>
+      <p><input type="submit" value="Save WiFi"></p>
+    </form>
+  </div>
+</div>
+
+<!-- ================= CALIBRATION ================= -->
+<div id="page-calibration" class="page hidden">
+  <div class="card">
+    <h3>Calibration</h3>
+    <form method="POST" action="/calibrate">
+      <p>Mic Offset:<br><input type="number" name="mic_offset" id="mic_offset"></p>
+      <p>MQ135 Offset:<br><input type="number" name="mq_offset" id="mq_offset"></p>
+      <p><input type="submit" value="Apply"></p>
+    </form>
+  </div>
+</div>
+
+<!-- ================= NAVIGATION ================= -->
+<div class="nav">
+  <button id="nav-dashboard" class="active" onclick="showPage('dashboard')"><span>🏠</span>Dashboard</button>
+  <button id="nav-charts" onclick="showPage('charts')"><span>📈</span>Charts</button>
+  <button id="nav-settings" onclick="showPage('settings')"><span>⚙️</span>Settings</button>
+  <button id="nav-logs" onclick="showPage('logs')"><span>📄</span>Logs</button>
+  <button id="nav-system" onclick="showPage('system')"><span>🖥</span>System</button>
+  <button id="nav-wifi" onclick="showPage('wifi')"><span>📶</span>WiFi</button>
+  <button id="nav-calibration" onclick="showPage('calibration')"><span>🎚️</span>Calibrate</button>
+</div>
+
+<script>
+function showPage(name) {
+  const pages = ["dashboard","charts","settings","logs","system","wifi","calibration"];
+  pages.forEach(p => {
+    document.getElementById("page-" + p).classList.add("hidden");
+    document.getElementById("nav-" + p).classList.remove("active");
+  });
+  document.getElementById("page-" + name).classList.remove("hidden");
+  document.getElementById("nav-" + name).classList.add("active");
+}
+
+// ================= LIVE DATA =================
+let micData=[], mqData=[], tempData=[], pressureData=[], labels=[];
+
+function createChart(id, label, color) {
+  return new Chart(document.getElementById(id), {
+    type: 'line',
+    data: { labels: labels, datasets: [{ label: label, borderColor: color, data: [] }] },
+    options: { animation: false, scales: { y: { beginAtZero: false } } }
+  });
+}
+
+let micChart = createChart("micChart","Mic","cyan");
+let mqChart = createChart("mqChart","MQ135","orange");
+let tempChart = createChart("tempChart","Temp","lime");
+let pressureChart = createChart("pressureChart","Pressure","yellow");
+
+function updateData() {
+  fetch("/api")
+    .then(r => r.json())
+    .then(d => {
+      document.getElementById("mic").innerText = d.mic;
+      document.getElementById("mq").innerText = d.mq;
+      document.getElementById("temp").innerText = d.temp;
+      document.getElementById("pressure").innerText = d.pressure;
+      document.getElementById("noise_thr").innerText = d.noise_thr;
+      document.getElementById("air_thr").innerText = d.air_thr;
+      document.getElementById("uptime").innerText = d.uptime;
+
+      document.getElementById("noise_input").value = d.noise_thr;
+      document.getElementById("air_input").value = d.air_thr;
+
+      document.getElementById("mic_offset").value = d.mic_offset;
+      document.getElementById("mq_offset").value = d.mq_offset;
+
+      let alertText = "No alerts.";
+      if (d.mic > d.noise_thr && d.mq > d.air_thr) alertText = "Noise AND Air Quality alerts!";
+      else if (d.mic > d.noise_thr) alertText = "Noise alert!";
+      else if (d.mq > d.air_thr) alertText = "Air Quality alert!";
+      document.getElementById("alert-text").innerText = alertText;
+
+      let t = new Date().toLocaleTimeString();
+      labels.push(t); if (labels.length > 20) labels.shift();
+
+      micData.push(d.mic); if (micData.length > 20) micData.shift();
+      mqData.push(d.mq); if (mqData.length > 20) mqData.shift();
+      tempData.push(d.temp); if (tempData.length > 20) tempData.shift();
+      pressureData.push(d.pressure); if (pressureData.length > 20) pressureData.shift();
+
+      micChart.data.labels = labels;
+      mqChart.data.labels = labels;
+      tempChart.data.labels = labels;
+      pressureChart.data.labels = labels;
+
+      micChart.data.datasets[0].data = micData;
+      mqChart.data.datasets[0].data = mqData;
+      tempChart.data.datasets[0].data = tempData;
+      pressureChart.data.datasets[0].data = pressureData;
+
+      micChart.update();
+      mqChart.update();
+      tempChart.update();
+      pressureChart.update();
+    });
+}
+
+setInterval(updateData, 1000);
+
+// ================= HISTORICAL VIEWER =================
+function loadHistory() {
+  fetch("/logjson")
+    .then(r => r.json())
+    .then(data => {
+      let ctx = document.getElementById("historyChart");
+      ctx.classList.remove("hidden");
+
+      let times = data.map(x => x.time);
+      let mic = data.map(x => x.mic);
+
+      new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: times,
+          datasets: [{ label: "Mic History", borderColor: "cyan", data: mic }]
+        },
+        options: { animation: false }
+      });
+    });
+}
+</script>
+
+</body>
+</html>
+)rawliteral";
+
+  return page;
+}
+
+// Root page (main UI)
+void handleRoot() {
+  server.send(200, "text/html", makePage());
+}
+
+// Settings page (GET)
+void handleSettingsGet() {
+  server.send(200, "text/html", makePage());
+}
+
+// Settings page (POST)
+void handleSettingsPost() {
+  if (server.hasArg("noise")) noise_thr = server.arg("noise").toInt();
+  if (server.hasArg("air"))   air_thr   = server.arg("air").toInt();
+  saveConfig();
+
+  server.sendHeader("Location", "/");
+  server.send(303);
+}
+
+// Log download (CSV)
+void handleLog() {
+  if (!SPIFFS.exists("/log.csv")) {
+    server.send(404, "text/plain", "No log file");
+    return;
+  }
+  File f = SPIFFS.open("/log.csv", FILE_READ);
+  server.streamFile(f, "text/csv");
+  f.close();
+}
+
+// Historical log JSON
+void handleLogJSONRoute() {
+  handleLogJSON();
+}
+
+// Calibration save
+void handleCalibrationRoute() {
+  handleCalibration();
+}
+
+// WiFi Manager save
+void handleWiFiRoute() {
+  handleWiFiSave();
+}
+
+// OTA upload form
+void handleOTAFormRoute() {
+  handleOTAForm();
+}
+
+// OTA upload binary
+void handleOTAUploadRoute() {
+  handleOTAUpload();
+}
+
+// API endpoint
+void handleAPIRoute() {
+  handleAPI();
+}
+
+// 404 fallback
+void handleNotFound() {
+  server.send(404, "text/plain", "Not found");
+}
+
+// ---------------- WIFI CONNECT ----------------
+
+void connectWiFi() {
+  // Try saved WiFi first (if exists)
+  if (wifi_ssid.length() > 0) {
+    Serial.println("Trying saved WiFi...");
+    WiFi.begin(wifi_ssid.c_str(), wifi_pass.c_str());
+
+    unsigned long startAttempt = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 6000) {
+      delay(300);
+      Serial.print(".");
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("\nConnected using saved WiFi!");
+      return;
+    }
+  }
+
+  // Fallback to hardcoded WiFi
+  Serial.println("Connecting to hardcoded WiFi...");
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(300);
+    Serial.print(".");
+  }
+
+  Serial.println("\nConnected using hardcoded WiFi!");
+}
+
+// ---------------- SETUP / LOOP ----------------
+
+void setup() {
+  Serial.begin(115200);
+  startMillis = millis();
+
+  // SPIFFS
+  if (!SPIFFS.begin(true)) {
+    Serial.println("SPIFFS Mount Failed");
+  }
+
+  loadConfig();
+  loadWiFiConfig();
+
+  // BMP280
+  if (!bmp.begin(0x76)) {
+    Serial.println("BMP280 not found!");
+  } else {
+    Serial.println("BMP280 OK");
+  }
+
+  analogReadResolution(12);
+
+  // WiFi
+  connectWiFi();
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+
+  // MQTT
+  mqtt.setServer(mqtt_server, 1883);
+
+  // OTA
+  ArduinoOTA.setHostname("ESP32_ENV_MONITOR");
+  ArduinoOTA.begin();
+
+  // ROUTES
+  server.on("/", handleRoot);
+
+  server.on("/settings", HTTP_GET, handleSettingsGet);
+  server.on("/settings", HTTP_POST, handleSettingsPost);
+
+  server.on("/log", handleLog);
+  server.on("/logjson", handleLogJSONRoute);
+
+  server.on("/api", handleAPIRoute);
+
+  server.on("/calibrate", HTTP_POST, handleCalibrationRoute);
+
+  server.on("/wifi", HTTP_POST, handleWiFiRoute);
+
+  server.on("/ota", HTTP_GET, handleOTAFormRoute);
+  server.on("/ota", HTTP_POST, []() {}, handleOTAUploadRoute);
+
+  server.onNotFound(handleNotFound);
+
+  server.begin();
+  Serial.println("HTTP server started");
+}
+
+void loop() {
+  ArduinoOTA.handle();
+  mqtt.loop();
+  server.handleClient();
+
+  readSensors();
+  logData();
+  sendMQTT();
+  sendQuestDB();   // now enabled
+
+  delay(2000);     // ~2s update interval
+}
