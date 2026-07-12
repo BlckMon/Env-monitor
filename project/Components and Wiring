@@ -1,1 +1,31 @@
+Component Purpose ESP32 Dev Board Main controller BME280 Temp, humidity, pressure BMP280 Temp, pressure MQ Gas Sensor Gas concentration (analog) Breadboard Prototype wiring Jumper Wires Connections
 
+🧪 Wiring Overview BME280 / BMP280 (I²C Mode) VIN → 3.3V
+
+GND → GND
+
+SCL → GPIO 22
+
+SDA → GPIO 21
+
+MQ Gas Sensor (Analog Mode) VCC → 5V
+
+GND → GND
+
+A0 → GPIO 34 (ADC input)
+
+Notes MQ sensors require 5V heating, but output is analog and safe for ESP32 ADC.
+
+Use a voltage divider if your MQ module outputs >3.3V on A0.
+
+BME280 and BMP280 can share the same I²C bus.
+
+. Install PlatformIO PlatformIO is recommended for building and uploading firmware.
+
+PlatformIO‑ready ESP32 code template This template assumes:
+
+ESP32
+
+BME280 + BMP280 on I²C (GPIO 21/22)
+
+MQ gas sensor on ADC (GPIO 34)
