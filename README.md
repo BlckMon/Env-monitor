@@ -7,6 +7,7 @@ The Environmental Monitor is a modular ESP32‑based sensing system designed to 
   <img src="docs/images/envmonitorbreadboard.jpg" alt="Breadboard Setup" width="45%" />
 </p>
 
+
 ---
 
 ## 🚀 Features
