@@ -3,10 +3,9 @@
 The Environmental Monitor is a modular ESP32‑based sensing system designed to track real‑time environmental conditions including temperature, humidity, pressure, and gas concentration. It uses BMP280/BME280 sensors for atmospheric data and an MQ gas sensor for air‑quality detection. 
 
 <p align="center">
-  <img src="docs/images/envmonitorcase.jpg" alt="3D Printed Enclosure" width="45%" />
-  <img src="docs/images/envmonitorbreadboard.jpg" alt="Breadboard Setup" width="45%" />
+  <img src="project/docs/images/envmonitorcase.jpg" alt="3D Printed Enclosure" width="45%" />
+  <img src="project/docs/images/envmonitorbreadboard.jpg" alt="Breadboard Setup" width="45%" />
 </p>
-
 
 ---
 
