@@ -1,122 +1,112 @@
-Environmental Monitor
-Environmental Monitor
-The Environmental Monitor is a modular ESP32‑based sensing system designed to track real‑time environmental conditions including temperature, humidity, pressure, and gas concentration. It uses BMP280/BME280 sensors for atmospheric data and an MQ gas sensor for air‑quality detection. The project is built on a breadboard prototype and can be expanded into a PCB or enclosure.
+# Environmental Monitor
+
+The Environmental Monitor is a modular ESP32‑based sensing system designed to track real‑time environmental conditions including temperature, humidity, pressure, and gas concentration. It uses BMP280/BME280 sensors for atmospheric data and an MQ gas sensor for air‑quality detection. The project is built on a breadboard prototype and can be expanded into a PCB or enclosure. 
+
 This repository contains the firmware, wiring documentation, and setup instructions needed to run the monitor.
 
-🚀 Features
-ESP32 Microcontroller
+---
 
-Wi‑Fi capable
+## 🚀 Features
 
-Fast sensor polling
+### ESP32 Microcontroller
+- Wi‑Fi capable
+- Fast sensor polling
+- Stable 3.3V operation
 
-Stable 3.3V operation
+### Environmental Sensors
+- BME280 – Temperature, humidity, pressure
+- BMP280 – Temperature, pressure
+- MQ Gas Sensor – Air‑quality / gas concentration (analog)
 
-Environmental Sensors
+### Breadboard Prototype
+- Easy to modify
+- Clear wiring layout
+- Supports additional modules (OLED, buzzer, LEDs)
 
-BME280 – Temperature, humidity, pressure
+### Modular Firmware
+- Separate drivers for each sensor
+- Expandable architecture
+- Clean, readable code structure
 
-BMP280 – Temperature, pressure
+---
 
-MQ Gas Sensor – Air‑quality / gas concentration (analog)
+## 📁 Project Structure
 
-Breadboard Prototype
+```text
+├── src/
+│   ├── main.cpp
+│   ├── bme280.cpp
+│   ├── bmp280.cpp
+│   ├── mq_sensor.cpp
+│   └── display.cpp
+├── include/
+│   ├── bme280.h
+│   ├── bmp280.h
+│   ├── mq_sensor.h
+│   └── display.h
+├── docs/
+│   ├── wiring_diagram.png
+│   └── sensor_notes.md
+├── platformio.ini
+└── README.md
+```
 
-Easy to modify
+| Component | Purpose |
+| :--- | :--- |
+| ESP32 Dev Board | Main controller |
+| BME280 | Temp, humidity, pressure |
+| BMP280 | Temp, pressure |
+| MQ Gas Sensor | Gas concentration (analog) |
+| Breadboard | Prototype wiring |
+| Jumper Wires | Connections |
 
-Clear wiring layout
+---
 
-Supports additional modules (OLED, buzzer, LEDs)
+## 🧪 Wiring Overview
 
-Modular Firmware
+### BME280 / BMP280 (I²C Mode)
+- VIN → 3.3V
+- GND → GND
+- SCL → GPIO 22
+- SDA → GPIO 21
 
-Separate drivers for each sensor
+### MQ Gas Sensor (Analog Mode)
+- VCC → 5V
+- GND → GND
+- A0 → GPIO 34 (ADC input)
 
-Expandable architecture
+### 📌 Notes
+- MQ sensors require 5V heating, but output is analog and safe for ESP32 ADC.
+- Use a voltage divider if your MQ module outputs >3.3V on A0.
+- BME280 and BMP280 can share the same I²C bus.
 
-Clean, readable code structure
+---
 
-📁 Project Structure
-/src
-  main.cpp
-  bme280.cpp
-  bmp280.cpp
-  mq_sensor.cpp
-  display.cpp
+## . Install PlatformIO
 
-/include
-  bme280.h
-  bmp280.h
-  mq_sensor.h
-  display.h
-
-/docs
-  wiring_diagram.png
-  sensor_notes.md
-
-platformio.ini
-README.md
-
- Component	              Purpose
-ESP32 Dev Board     	    Main controller
-BME280	                  Temp, humidity, pressure
-BMP280	                  Temp, pressure
-MQ Gas Sensor	            Gas concentration (analog)
-Breadboard	              Prototype wiring
-Jumper Wires	            Connections
-
-🧪 Wiring Overview
-BME280 / BMP280 (I²C Mode)
-VIN → 3.3V
-
-GND → GND
-
-SCL → GPIO 22
-
-SDA → GPIO 21
-
-MQ Gas Sensor (Analog Mode)
-VCC → 5V
-
-GND → GND
-
-A0 → GPIO 34 (ADC input)
-
-Notes
-MQ sensors require 5V heating, but output is analog and safe for ESP32 ADC.
-
-Use a voltage divider if your MQ module outputs >3.3V on A0.
-
-BME280 and BMP280 can share the same I²C bus.
-
-. Install PlatformIO
 PlatformIO is recommended for building and uploading firmware.
 
-PlatformIO‑ready ESP32 code template
+### PlatformIO‑ready ESP32 code template
 This template assumes:
+- ESP32
+- BME280 + BMP280 on I²C (GPIO 21/22)
+- MQ gas sensor on ADC (GPIO 34)
+- Output via Serial (for ingestion daemon) and optionally Wi‑Fi later.
 
-ESP32
-
-BME280 + BMP280 on I²C (GPIO 21/22)
-
-MQ gas sensor on ADC (GPIO 34)
-
-Output via Serial (for ingestion daemon) and optionally Wi‑Fi later.
-
-platformio.ini
+### `platformio.ini`
+```ini
 [env:esp32-env-monitor]
 platform = espressif32
 board = esp32dev
 framework = arduino
-
 monitor_speed = 115200
-
-lib_deps =
+lib_deps = 
   adafruit/Adafruit BMP280 Library
   adafruit/Adafruit BME280 Library
+```
 
-src/main.cpp 
-
+### `src/main.cpp`
+```cpp
 #include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_BME280.h>
@@ -186,30 +176,23 @@ void loop() {
 
   delay(2000); // 2s sampling
 }
+```
 
+---
 
-QuestDB ingestion pipeline (Linux + C daemon)
-Install QuestDB
+## QuestDB ingestion pipeline (Linux + C daemon)
+
+### Install QuestDB
 Download and run QuestDB on your Debian VM:
-
+```bash
 sudo apt install questdb
 sudo systemctl enable questdb
 sudo systemctl start questdb
+```
 
-Deploy the Ingestion Daemon
-Compile:
-gcc ingest_daemon.c -o ingest
-
-Install as a systemd service:
-
-sudo cp ingest.service /etc/systemd/system/
-sudo systemctl enable ingest
-sudo systemctl start ingest
-
-The daemon will continuously ingest sensor readings into QuestDB.
-
-QuestDB table design
+### QuestDB table design
 In QuestDB, create a table for your sensor data:
+```sql
 CREATE TABLE env_monitor (
     ts        TIMESTAMP,
     temperature DOUBLE,
@@ -217,20 +200,17 @@ CREATE TABLE env_monitor (
     pressure    DOUBLE,
     gas_raw     INT
 ) TIMESTAMP(ts);
-
+```
 You can do this via QuestDB’s web console.
 
- ingestion daemon (reads Serial, writes to QuestDB)
+### Ingestion daemon (reads Serial, writes to QuestDB)
 Assumptions:
+- ESP32 connected via USB as `/dev/ttyUSB0`
+- QuestDB running locally on `http://localhost:9000`
+- We’ll use the Inserts via HTTP (`/exec`) for simplicity.
 
-ESP32 connected via USB as /dev/ttyUSB0
-
-QuestDB running locally on http://localhost:9000
-
-We’ll use the Inserts via HTTP (/exec) for simplicity.
-
-ingest_daemon.c
-
+### `ingest_daemon.c`
+```c
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -353,17 +333,19 @@ int main() {
     close(fd);
     return 0;
 }
+```
 
-Build and run daemon
+### Build and run daemon
 Install dependencies (Debian):
-
+```bash
 sudo apt install build-essential libcurl4-openssl-dev
 gcc ingest_daemon.c -o ingest -lcurl
 ./ingest
+```
 
-systemd service (optional but recommended)
-Create /etc/systemd/system/env_ingest.service:
-
+### systemd service (optional but recommended)
+Create `/etc/systemd/system/env_ingest.service`:
+```ini
 [Unit]
 Description=Environmental Monitor Ingestion Daemon
 After=network.target
@@ -375,53 +357,39 @@ User=youruser
 
 [Install]
 WantedBy=multi-user.target
-Then:
+```
 
+Then:
+```bash
 sudo cp ingest /usr/local/bin/
 sudo systemctl enable env_ingest.service
 sudo systemctl start env_ingest.service
+```
 
-Grafana dashboard (QuestDB as data source)
-High‑level steps:
+---
 
-Add data source
+## 📊 Grafana dashboard (QuestDB as data source)
 
-Type: PostgreSQL (QuestDB’s PG wire)
+### High‑level steps:
+1. **Add data source**
+   - Type: PostgreSQL (QuestDB’s PG wire)
+   - Host: `localhost:8812`
+   - Database: `qdb`
+   - User: admin (or configured)
+   - SSL: disabled (local)
 
-Host: localhost:8812
+2. **Create panel query**
+   - Example query:
+     ```sql
+     SELECT ts, temperature, humidity, pressure, gas_raw 
+     FROM env_monitor 
+     WHERE $__timeFilter(ts) 
+     ORDER BY ts;
+     ```
 
-Database: qdb
-
-User: admin (or configured)
-
-SSL: disabled (local)
-
-Create panel query
-
-Example query:
-SELECT
-  ts,
-  temperature,
-  humidity,
-  pressure,
-  gas_raw
-FROM env_monitor
-WHERE $__timeFilter(ts)
-ORDER BY ts;
-
-Build panels:
-
-Line chart: temperature vs time
-
-Line chart: humidity vs time
-
-Line chart: pressure vs time
-
-Bar/line: gas_raw vs time
-
-Add thresholds/alerts for gas_raw and temperature.
-
-
-
-
-
+3. **Build panels:**
+   - Line chart: temperature vs time
+   - Line chart: humidity vs time
+   - Line chart: pressure vs time
+   - Bar/line: gas_raw vs time
+   - Add thresholds/alerts for `gas_raw` and `temperature`.
